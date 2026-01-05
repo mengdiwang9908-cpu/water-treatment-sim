@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>HydroResurge AEC - Scientific v8.0</title>
+    <style>
+        body { margin: 0; background: #000a0d; color: white; font-family: 'Segoe UI', Arial, sans-serif; overflow: hidden; }
+        canvas { display: block; }
+
+        #ui-overlay { 
+            position: absolute; top: 30px; left: 30px; 
+            background: rgba(0,25,35,0.95); padding: 25px; 
+            border: 3px solid #00d2ff; z-index: 1000;
+        }
+        button { 
+            display: block; width: 250px; margin: 10px 0; padding: 15px; 
+            background: #001e26; border: 2px solid #00d2ff; color: #00d2ff; 
+            cursor: pointer; font-size: 14px; font-weight: bold;
+        }
+        .active { background: #00d2ff !important; color: #000 !important; }
+        #btnReset { border-color: #ff4444; color: #ff4444; }
+
+        @keyframes shake {
+            0% { transform: translate(-50%, -50%) rotate(0deg); }
+            20% { transform: translate(-52%, -48%) rotate(-1deg); }
+            40% { transform: translate(-48%, -52%) rotate(1deg); }
+            60% { transform: translate(-51%, -49%) rotate(-0.5deg); }
+            80% { transform: translate(-49%, -51%) rotate(0.5deg); }
+            100% { transform: translate(-50%, -50%) rotate(0deg); }
+        }
+
+        #stardew-toast { 
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            display: none; background: #4b2d1a; border: 6px solid #e7ab3d; 
+            padding: 40px; z-index: 2000; text-align: center;
+            box-shadow: 25px 25px 0px rgba(0,0,0,0.5);
+            animation: shake 0.5s ease-in-out;
+        }
+    </style>
+</head>
+<body>
+
+<div id="ui-overlay">
+    <h2 style="margin:0 0 15px 0; color:#00d2ff;">HYDRORESURGE™ AEC</h2>
+    <button id="btnInject">1. START SYSTEM</button>
+    <button id="btnM1">2. MODULE 1 (AOR/HER)</button>
+    <button id="btnM2">3. MODULE 2 (OER/ORR)</button>
+    <button id="btnReset">RESET SYSTEM</button>
+</div>
+
+<div id="stardew-toast">
+    <div style="font-size: 70px; margin-bottom: 10px;">💎</div>
+    <h2 style="color:white; font-size:36px; margin:0; text-shadow:3px 3px #000;">MISSION ACCOMPLISHED</h2>
+    <p style="color:#ffd700; font-size:20px; font-weight:bold; margin-top:20px;">"Transforming wastewater into valuable resources."</p>
+</div>
+
+<canvas id="simCanvas"></canvas>
+
+<script>
+    const canvas = document.getElementById('simCanvas');
+    const ctx = canvas.getContext('2d');
+    let particles = [], bubbles = [], h2o2Dots = [];
+    let m1On = false, m2On = false, powerOn = false, sloganShown = false;
+    let plugOffset = 0, removedCount = 0;
+
+    function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+    window.addEventListener('resize', resize); resize();
+
+    // 核心渲染函数：处理任何带数字的化学式
+    function drawChemFormula(formula, x, y, baseColor, fontSize = 24) {
+        ctx.save();
+        ctx.fillStyle = baseColor;
+        ctx.textAlign = "left";
+        let currentX = x;
+        for (let i = 0; i < formula.length; i++) {
+            let char = formula[i];
+            if (!isNaN(char) && char !== ' ') { 
+                ctx.font = `bold ${Math.floor(fontSize * 0.6)}px Arial`;
+                ctx.fillText(char, currentX, y + Math.floor(fontSize * 0.3));
+                currentX += ctx.measureText(char).width + 2;
+            } else {
+                ctx.font = `bold ${fontSize}px Arial`;
+                ctx.fillText(char, currentX, y);
+                currentX += ctx.measureText(char).width;
+            }
+        }
+        ctx.restore();
+    }
+
+    class Particle {
+        constructor(type) {
+            this.type = type;
+            this.x = -50;
+            this.y = canvas.height/2 + (Math.random()-0.5)*50;
+            this.vx = 2.4; this.state = 'in'; this.isClean = false;
+        }
+        update(t1X, t2X, tW) {
+            if (this.state === 'in') {
+                this.x += this.vx; if (this.x > t1X) this.state = 't1';
+            } else if (this.state === 't1') {
+                this.x += this.vx * 0.4;
+                if (m1On && this.type === 'NH3' && Math.random() < 0.05) {
+                    this.type = 'DONE';
+                    bubbles.push({x: t1X+70, y: this.y, vy: -1.5, f: 'N2', c: 'rgba(0,210,255,0.3)'});
+                    bubbles.push({x: t1X+tW-70, y: this.y, vy: -1.8, f: 'H2', c: 'rgba(255,255,255,0.2)'});
+                }
+                if (this.x > t1X + tW) this.state = 'mid';
+            } else if (this.state === 'mid') {
+                this.x += this.vx * 1.5; if (this.x > t2X) this.state = 't2';
+            } else if (this.state === 't2') {
+                this.x += this.vx * 0.4;
+                if (m2On) {
+                    // 调慢 O2 产生速度 (0.003)
+                    if (Math.random() < 0.003) bubbles.push({x: t2X+70, y: this.y, vy: -1.5, f: 'O2', c: 'rgba(255,170,0,0.2)'});
+                    if (this.type === 'Pollutant' && !this.isClean && Math.random() < 0.03) {
+                        this.isClean = true; removedCount++;
+                    }
+                }
+                if (this.x > t2X + tW) this.state = 'out';
+            } else { this.x += this.vx * 1.5; }
+        }
+        draw() {
+            if (this.type === 'DONE') return;
+            ctx.fillStyle = this.isClean ? '#00ffff' : (this.type === 'NH3' ? '#00d2ff' : '#ff0055');
+            ctx.globalAlpha = this.isClean ? 0.4 : 1.0;
+            let radius = this.type==='NH3'?22:32;
+            ctx.beginPath(); ctx.arc(this.x, this.y, radius, 0, Math.PI*2); ctx.fill();
+            ctx.globalAlpha = 1.0; 
+            
+            if (this.isClean) {
+                ctx.fillStyle = "#fff"; ctx.font = "bold 12px Arial"; ctx.textAlign = "center";
+                ctx.fillText("Clean", this.x, this.y+5);
+            } else if (this.type === 'NH3') {
+                // 修复粒子内的 NH3 下标
+                drawChemFormula("NH3", this.x - 14, this.y + 6, "#fff", 16);
+            } else {
+                ctx.fillStyle = "#fff"; ctx.font = "bold 12px Arial"; ctx.textAlign = "center";
+                ctx.fillText(this.type, this.x, this.y+5);
+            }
+        }
+    }
+
+    function animate() {
+        ctx.fillStyle = "#000a0d"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        const cy = canvas.height / 2;
+        const tW = 360, tH = 280;
+        const t1X = 450; 
+        const t2X = t1X + tW + 120;
+
+        // Pipes
+        ctx.strokeStyle = "#1a3a4a"; ctx.lineWidth = 5;
+        ctx.strokeRect(0, cy-40, t1X, 80); ctx.strokeRect(t1X+tW, cy-40, t2X-t1X-tW, 80); ctx.strokeRect(t2X+tW, cy-40, canvas.width, 80);
+
+        // Tank 1
+        ctx.fillStyle = m1On ? "#001a25" : "#051015"; ctx.fillRect(t1X, cy-tH/2, tW, tH);
+        ctx.strokeStyle = m1On ? "#00d2ff" : "#1a3a4a"; ctx.strokeRect(t1X, cy-tH/2, tW, tH);
+        ctx.fillStyle = "#444"; ctx.fillRect(t1X+65, cy-tH/2+20, 12, tH-40); ctx.fillRect(t1X+tW-77, cy-tH/2+20, 12, tH-40);
+        drawChemFormula("N2", t1X+50, cy-tH/2-25, m1On ? "#00d2ff" : "#333");
+        drawChemFormula("H2", t1X+tW-100, cy-tH/2-25, m1On ? "#fff" : "#333");
+
+        // Tank 2
+        ctx.fillStyle = m2On ? "#150020" : "#051015"; ctx.fillRect(t2X, cy-tH/2, tW, tH);
+        ctx.strokeStyle = m2On ? "#a066ff" : "#1a3a4a"; ctx.strokeRect(t2X, cy-tH/2, tW, tH);
+        ctx.fillStyle = "#444"; ctx.fillRect(t2X+65, cy-tH/2+20, 12, tH-40); ctx.fillRect(t2X+tW-77, cy-tH/2+20, 12, tH-40);
+        drawChemFormula("O2", t2X+50, cy-tH/2-25, m2On ? "#ffaa00" : "#333");
+        drawChemFormula("H2O2", t2X+tW-130, cy-tH/2-25, m2On ? "#a066ff" : "#333");
+
+        // Power
+        const pX = (t1X + t2X + tW) / 2;
+        const pY = cy + tH / 2 + 70;
+        if (powerOn && plugOffset < 35) plugOffset += 2;
+        if (powerOn) {
+            ctx.shadowBlur = 20; ctx.shadowColor = "yellow";
+            ctx.fillStyle = "yellow"; ctx.beginPath(); ctx.arc(pX, pY-plugOffset, 6, 0, Math.PI*2); ctx.fill();
+            ctx.shadowBlur = 0;
+        }
+        ctx.fillStyle = "#222"; ctx.fillRect(pX-30, pY-plugOffset+15, 60, 35);
+        ctx.fillStyle = "#ffd700"; ctx.fillRect(pX-18, pY-plugOffset, 6, 15); ctx.fillRect(pX+12, pY-plugOffset, 6, 15);
+        ctx.font = "bold 16px Arial"; ctx.textAlign = "center"; ctx.fillText("POWER", pX, pY-plugOffset+45);
+
+        // Bubbles
+        bubbles.forEach((b, i) => {
+            b.y += b.vy;
+            ctx.beginPath(); ctx.arc(b.x, b.y, 25, 0, Math.PI*2); 
+            ctx.fillStyle = b.c; ctx.fill(); 
+            ctx.strokeStyle = "rgba(255,255,255,0.3)"; ctx.stroke();
+            drawChemFormula(b.f, b.x-15, b.y+8, "#fff", 22);
+            if (b.y < 0) bubbles.splice(i, 1);
+        });
+
+        if (m2On && Math.random() < 0.6) h2o2Dots.push({x: t2X+tW-71+Math.random()*40, y: cy+(Math.random()-0.5)*tH, l: 40});
+        h2o2Dots.forEach((d, i) => {
+            d.l--; ctx.fillStyle = "#a066ff"; ctx.beginPath(); ctx.arc(d.x, d.y, 4, 0, Math.PI*2); ctx.fill();
+            if(d.l<=0) h2o2Dots.splice(i,1);
+        });
+
+        particles.forEach((p, i) => {
+            p.update(t1X, t2X, tW); p.draw();
+            if (p.x > canvas.width) particles.splice(i, 1);
+        });
+
+        if (!sloganShown && removedCount >= 6) {
+            sloganShown = true;
+            document.getElementById('stardew-toast').style.display = 'block';
+        }
+        requestAnimationFrame(animate);
+    }
+
+    document.getElementById('btnInject').onclick = () => {
+        powerOn = true;
+        let c = 0; const inv = setInterval(() => {
+            if(!powerOn) return clearInterval(inv);
+            particles.push(new Particle('NH3'));
+            if(Math.random()>0.4) particles.push(new Particle('Pollutant'));
+            if(++c > 25) clearInterval(inv);
+        }, 900);
+    };
+
+    document.getElementById('btnM1').onclick = function() { m1On = !m1On; this.classList.toggle('active'); };
+    document.getElementById('btnM2').onclick = function() { m2On = !m2On; this.classList.toggle('active'); };
+    document.getElementById('btnReset').onclick = () => {
+        m1On = false; m2On = false; powerOn = false; sloganShown = false;
+        particles = []; bubbles = []; h2o2Dots = []; plugOffset = 0; removedCount = 0;
+        document.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        document.getElementById('stardew-toast').style.display = 'none';
+    };
+
+    animate();
+</script>
+</body>
+</html>
